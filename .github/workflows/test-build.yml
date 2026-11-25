@@ -1,0 +1,42 @@
+name: Test Podcast RSS Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions tab
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run RSS build script
+        run: python3 scripts/build_feeds.py
+
+      - name: Validate generated XML syntax
+        run: |
+          python3 -c '
+          import pathlib, xml.etree.ElementTree as ET
+          files = list(pathlib.Path("dist").rglob("*.xml"))
+          assert files, "No XML files generated!"
+          for f in files:
+              ET.parse(f)
+              print(f"OK: {f} ({f.stat().st_size} bytes)")
+          '
+
+      - name: Upload built feeds as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: podcast-rss-feeds
+          path: dist/
+          retention-days: 7
