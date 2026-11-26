@@ -4,6 +4,8 @@ import datetime
 import email.utils
 import json
 import pathlib
+import shutil
+import urllib.parse
 import urllib.request
 import xml.dom.minidom
 import xml.etree.ElementTree as ET
@@ -30,7 +32,9 @@ def to_rfc2822(date_str: str) -> str:
 
 def fetch_byte_size(url: str) -> str:
     """Fetch Content-Length via HTTP HEAD (with Range GET fallback)."""
-    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "PodcastRSSBuilder/1.0"})
+    req = urllib.request.Request(
+        url, method="HEAD", headers={"User-Agent": "PodcastRSSBuilder/1.0"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             length = resp.headers.get("Content-Length")
@@ -50,7 +54,35 @@ def fetch_byte_size(url: str) -> str:
         return resp.headers.get("Content-Length", "0")
 
 
-def add_sub(parent: ET.Element, tag: str, text: str | None = None, attrib: dict | None = None) -> ET.Element:
+def resolve_cover_source(config: dict, config_path: pathlib.Path) -> pathlib.Path:
+    """Locate the local cover art file specified in config or matching the slug."""
+    cover_entry = config.get("cover_file", "").strip()
+    if cover_entry:
+        candidate = pathlib.Path(cover_entry)
+        if candidate.exists():
+            return candidate
+        in_data = DATA_DIR / cover_entry
+        if in_data.exists():
+            return in_data
+        raise FileNotFoundError(f"Cover art not found: {cover_entry}")
+
+    # Auto-detect data/<slug>.(jpg|jpeg|png) if cover_file is omitted
+    for ext in (".jpg", ".jpeg", ".png"):
+        auto_path = config_path.with_suffix(ext)
+        if auto_path.exists():
+            return auto_path
+
+    raise FileNotFoundError(
+        f"No cover art found for {config['slug']}. Set 'cover_file' in {config_path.name}."
+    )
+
+
+def add_sub(
+    parent: ET.Element,
+    tag: str,
+    text: str | None = None,
+    attrib: dict | None = None,
+) -> ET.Element:
     elem = ET.SubElement(parent, tag, attrib or {})
     if text is not None:
         elem.text = str(text)
@@ -63,6 +95,19 @@ def build_podcast(config_path: pathlib.Path) -> None:
     if not csv_path.exists():
         raise FileNotFoundError(f"Missing CSV file: {csv_path}")
 
+    out_dir = DIST_DIR / config["slug"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy cover art photo into dist/<slug>/
+    cover_src = resolve_cover_source(config, config_path)
+    cover_dest = out_dir / cover_src.name
+    shutil.copy2(cover_src, cover_dest)
+
+    # Derive public image_url from feed_url base if not explicitly overridden
+    image_url = config.get("image_url", "").strip()
+    if not image_url:
+        image_url = urllib.parse.urljoin(config["feed_url"], cover_src.name)
+
     rss = ET.Element("rss", {"version": "2.0"})
     channel = add_sub(rss, "channel")
 
@@ -71,32 +116,51 @@ def build_podcast(config_path: pathlib.Path) -> None:
     add_sub(channel, "link", config["link"])
     add_sub(channel, "description", config["description"])
     add_sub(channel, "language", config.get("language", "en-us"))
-    add_sub(channel, "lastBuildDate", email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc)))
+    add_sub(
+        channel,
+        "lastBuildDate",
+        email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc)),
+    )
     add_sub(
         channel,
         f"{{{ATOM_NS}}}link",
-        attrib={"href": config["feed_url"], "rel": "self", "type": "application/rss+xml"},
+        attrib={
+            "href": config["feed_url"],
+            "rel": "self",
+            "type": "application/rss+xml",
+        },
     )
 
     # Apple Podcasts / iTunes channel tags
     add_sub(channel, f"{{{ITUNES_NS}}}author", config["author"])
     add_sub(channel, f"{{{ITUNES_NS}}}summary", config["description"])
-    add_sub(channel, f"{{{ITUNES_NS}}}explicit", str(config.get("explicit", "false")).lower())
-    add_sub(channel, f"{{{ITUNES_NS}}}image", attrib={"href": config["image_url"]})
+    add_sub(
+        channel,
+        f"{{{ITUNES_NS}}}explicit",
+        str(config.get("explicit", "false")).lower(),
+    )
+    add_sub(channel, f"{{{ITUNES_NS}}}image", attrib={"href": image_url})
 
     owner = add_sub(channel, f"{{{ITUNES_NS}}}owner")
     add_sub(owner, f"{{{ITUNES_NS}}}name", config["owner_name"])
     add_sub(owner, f"{{{ITUNES_NS}}}email", config["owner_email"])
 
-    cat = add_sub(channel, f"{{{ITUNES_NS}}}category", attrib={"text": config["category"]})
+    cat = add_sub(
+        channel, f"{{{ITUNES_NS}}}category", attrib={"text": config["category"]}
+    )
     if config.get("subcategory"):
-        add_sub(cat, f"{{{ITUNES_NS}}}category", attrib={"text": config["subcategory"]})
+        add_sub(
+            cat, f"{{{ITUNES_NS}}}category", attrib={"text": config["subcategory"]}
+        )
 
     # Read episodes from CSV and sort newest first
     with csv_path.open(encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
 
-    rows.sort(key=lambda r: datetime.datetime.fromisoformat(r["pub_date"].strip()), reverse=True)
+    rows.sort(
+        key=lambda r: datetime.datetime.fromisoformat(r["pub_date"].strip()),
+        reverse=True,
+    )
 
     for row in rows:
         item = add_sub(channel, "item")
@@ -122,7 +186,11 @@ def build_podcast(config_path: pathlib.Path) -> None:
         )
 
         add_sub(item, f"{{{ITUNES_NS}}}duration", row["duration"].strip())
-        add_sub(item, f"{{{ITUNES_NS}}}explicit", row.get("explicit", "false").strip().lower() or "false")
+        add_sub(
+            item,
+            f"{{{ITUNES_NS}}}explicit",
+            row.get("explicit", "false").strip().lower() or "false",
+        )
 
         if row.get("episode_num", "").strip():
             add_sub(item, f"{{{ITUNES_NS}}}episode", row["episode_num"].strip())
@@ -131,13 +199,13 @@ def build_podcast(config_path: pathlib.Path) -> None:
 
     # Pretty-print XML and write to dist/<slug>/feed.xml
     raw_xml = ET.tostring(rss, encoding="utf-8")
-    pretty_xml = xml.dom.minidom.parseString(raw_xml).toprettyxml(indent="  ", encoding="utf-8")
+    pretty_xml = xml.dom.minidom.parseString(raw_xml).toprettyxml(
+        indent="  ", encoding="utf-8"
+    )
 
-    out_dir = DIST_DIR / config["slug"]
-    out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "feed.xml"
     out_file.write_bytes(pretty_xml)
-    print(f"Generated {out_file} ({len(rows)} episodes)")
+    print(f"Generated {out_file} ({len(rows)} episodes) + copied {cover_dest.name}")
 
 
 def write_cloudflare_headers() -> None:
