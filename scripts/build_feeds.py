@@ -167,6 +167,7 @@ def build_podcast(config_path: pathlib.Path) -> None:
         add_sub(item, "title", row["title"].strip())
         add_sub(item, "guid", row["guid"].strip(), {"isPermaLink": "false"})
         add_sub(item, "pubDate", to_rfc2822(row["pub_date"]))
+        add_sub(item, "link", row["link"].strip())
         add_sub(item, "description", row["description"].strip())
         add_sub(item, f"{{{CONTENT_NS}}}encoded", row["description"].strip())
 
