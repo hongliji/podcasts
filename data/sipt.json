@@ -11,6 +11,6 @@
   "cover_file": "sipt-logo-1-1400x1400.png",
   "image_url": "https://podcasts.liji.link/sipt/sipt-logo-1-1400x1400.png",
   "category": "Education",
-  "subcategory": "Networking",
+  "_subcategory": "Networking",
   "explicit": "false"
 }
